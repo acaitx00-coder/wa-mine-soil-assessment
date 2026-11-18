@@ -1,0 +1,207 @@
+---
+title: "Geochemical and Ecological Risk Assessment of Surface Soils at Yalgoo Mineral Field, WA"
+author: "Kacey Cheng"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", dpi = 300)
+
+# Load packages from the ENVT4461 spatial & reporting workflow
+need <- c("sp", "sf", "maptiles", "prettymapr", "flextable", "officer")
+for(pkg in need){
+  if(!require(pkg, character.only = TRUE)){
+    install.packages(pkg)
+    library(pkg, character.only = TRUE)
+  }
+}
+
+set_flextable_defaults(font.family = "Arial", font.size = 9,
+                       theme_fun = "theme_booktabs", padding = 2,
+                       na_str = "-")
+```
+
+## 1. Data Cleaning & Spatial Projection
+
+We import the WAMEX surface soil geochemistry dataset (`ss_assay_pivoted_2.csv`), standardize below-detection-limit (BDL) negative values (`-10`) to `NA`, and project WGS84 geographic coordinates (`EPSG:4326`) to UTM Zone 50S (`EPSG:32750`).
+
+```{r data-cleaning}
+# Read raw lines and fix WAMEX unescaped comma-quote formatting in sampleid
+raw_lines <- readLines("ss_assay_pivoted.csv", warn = FALSE)
+clean_lines <- gsub('"," ', ' - ', raw_lines, fixed = TRUE)
+soil <- read.csv(text = clean_lines, stringsAsFactors = FALSE,
+                 check.names = FALSE, na.strings = c("NA", "NULL", ""))
+
+# Standardize metal column names (mg/kg) and convert BDL values (<= 0) to NA
+metal_cols <- c("Cu_PPM", "Ni_PPM", "Pb_PPM", "Zn_PPM")
+clean_names <- c("Cu", "Ni", "Pb", "Zn")
+for(i in seq_along(metal_cols)){
+  vals <- as.numeric(soil[[metal_cols[i]]])
+  vals[vals <= 0] <- NA
+  soil[[clean_names[i]]] <- vals
+}
+
+# Convert coordinates to sf object and project to UTM Zone 50S (EPSG:32750)
+soil$longitude <- as.numeric(soil$longitude)
+soil$latitude <- as.numeric(soil$latitude)
+soil_sf <- st_as_sf(soil, coords = c("longitude", "latitude"), crs = 4326) |>
+  st_transform(crs = st_crs(32750))
+
+# Extract projected Easting and Northing (m) for base R spatial plotting
+coords_utm <- st_coordinates(soil_sf)
+soil$Easting <- coords_utm[, 1]
+soil$Northing <- coords_utm[, 2]
+soil$company <- factor(soil$company)
+
+# Helper functions reused from ENVT4461 workflow
+summ_one <- function(df, vars){
+  out <- data.frame(Variable = vars,
+                    mean = NA, sd = NA, min = NA, median = NA, max = NA, n = NA, nNA = NA)
+  for(i in seq_along(vars)){
+    x <- df[[vars[i]]]
+    nvalid <- length(na.omit(x))
+    out$n[i] <- nvalid
+    out$nNA[i] <- sum(is.na(x))
+    if(nvalid > 0){
+      out$mean[i] <- mean(x, na.rm = TRUE)
+      out$sd[i] <- sd(x, na.rm = TRUE)
+      out$min[i] <- min(x, na.rm = TRUE)
+      out$median[i] <- median(x, na.rm = TRUE)
+      out$max[i] <- max(x, na.rm = TRUE)
+    }
+  }
+  out
+}
+
+format_ft <- function(df, caption, font_size = 9){
+  flextable(df) |>
+    bold(part = "header") |>
+    fontsize(size = font_size, part = "all") |>
+    align(align = "right", part = "body") |>
+    align(j = 1, align = "left", part = "all") |>
+    valign(valign = "center", part = "all") |>
+    set_caption(caption = caption) |>
+    autofit()
+}
+```
+
+## 2. Ecological Guideline Comparison & Spatial Zone Testing
+
+We compare surface soil metal concentrations against conservative Ecological Investigation Levels (EILs; NEPC Schedule B5a) and partition valid samples along the median UTM Northing into a northern **Mineralised Core Zone** and a southern **Peripheral Buffer Zone** to test spatial dispersion using Kruskal-Wallis tests.
+
+```{r guideline-and-zone-test}
+# 1. Define conservative NEPC Schedule B5a EILs (mg/kg)
+metals <- c("Cu", "Ni", "Pb", "Zn")
+eil_vals <- c(Cu = 22, Ni = 30, Pb = 480, Zn = 27)
+
+# Overall summary and EIL exceedance table (reusing summ_one & format_ft)
+metal_sum <- summ_one(soil, metals)
+metal_sum$EIL <- eil_vals[metal_sum$Variable]
+metal_sum$n_exceed <- mapply(function(v, eil) sum(soil[[v]] > eil, na.rm = TRUE),
+                             metal_sum$Variable, metal_sum$EIL)
+metal_sum$pct_exceed <- round(100 * metal_sum$n_exceed / metal_sum$n, 1)
+
+eil_tab <- data.frame(
+  Element = metal_sum$Variable,
+  `EIL (mg/kg)` = metal_sum$EIL,
+  `Median (mg/kg)` = round(metal_sum$median, 2),
+  `Max (mg/kg)` = round(metal_sum$max, 2),
+  `Valid n` = metal_sum$n,
+  `Exceedances (> EIL)` = paste0(metal_sum$n_exceed, "/", metal_sum$n,
+                                 " (", metal_sum$pct_exceed, "%)"),
+  check.names = FALSE
+)
+
+format_ft(eil_tab, "Table 1. Summary statistics and EIL comparison for surface soil metals (mg/kg).")
+
+# 2. Partition valid multi-metal samples into North (Core) vs South (Buffer)
+valid_soil <- soil[rowSums(!is.na(soil[, metals])) > 0, ]
+cutoff_north <- median(valid_soil$Northing, na.rm = TRUE)
+valid_soil$Zone <- factor(ifelse(valid_soil$Northing >= cutoff_north,
+                                 "Core (North)", "Buffer (South)"))
+
+# Kruskal-Wallis test across spatial zones
+zone_tab <- data.frame(
+  Element = metals,
+  `Core Median` = NA,
+  `Buffer Median` = NA,
+  `Kruskal-Wallis P` = NA,
+  check.names = FALSE
+)
+
+for(i in seq_along(metals)){
+  v <- metals[i]
+  zone_tab$`Core Median`[i] <- round(median(valid_soil[valid_soil$Zone == "Core (North)", v], na.rm = TRUE), 2)
+  zone_tab$`Buffer Median`[i] <- round(median(valid_soil[valid_soil$Zone == "Buffer (South)", v], na.rm = TRUE), 2)
+  zone_tab$`Kruskal-Wallis P`[i] <- signif(kruskal.test(valid_soil[[v]] ~ valid_soil$Zone)$p.value, 3)
+}
+
+format_ft(zone_tab, "Table 2. Spatial comparison between Mineralised Core and Peripheral Buffer zones.")
+```
+
+## 3. Spatial Distribution of Soil Metals
+
+To visualise spatial dispersion and localised hotspots, we overlay concentration-scaled sample bubbles onto high-resolution satellite imagery (`Esri.WorldImagery`, UTM Zone 50S). Samples exceeding site-specific EILs are highlighted with red outer rings.
+
+```{r spatial-maps, fig.width=6.5, fig.height=7.2}
+# 1. Define UTM Zone 50S map extent and fetch satellite basemap
+map_extent <- st_as_sf(data.frame(x = c(493250, 494950),
+                                  y = c(6805300, 6807100)),
+                       coords = c("x", "y"), crs = st_crs(32750))
+sat_tiles <- get_tiles(map_extent, provider = "Esri.WorldImagery", crop = TRUE, zoom = 15)
+map_frame <- st_coordinates(map_extent)
+
+# 2. Proportional bubble scaling function (reused from ENVT4461 workflow)
+scale_cex <- function(x){
+  out <- rep(0.70, length(x))
+  ok <- !is.na(x)
+  if(sum(ok) > 1){
+    lo <- min(x[ok], na.rm = TRUE)
+    hi <- as.numeric(quantile(x[ok], 0.95, na.rm = TRUE))
+    if(hi > lo){
+      xx <- pmin(x[ok], hi)
+      out[ok] <- 0.65 + 1.55 * sqrt((xx - lo) / (hi - lo))
+    }
+  }
+  out[!ok] <- NA
+  out
+}
+
+# 3. Plotting function for each metal panel
+plot_metal_map <- function(v){
+  x <- valid_soil[[v]]
+  ok <- !is.na(x)
+  psize <- scale_cex(x)
+  xy <- cbind(valid_soil$Easting, valid_soil$Northing)
+  is_bad <- !is.na(x) & (x > eil_vals[v])
+
+  plot(map_frame, type = "n", asp = 1, xaxs = "i", yaxs = "i",
+       xlab = "", ylab = "", axes = FALSE)
+  plot_tiles(sat_tiles, add = TRUE)
+
+  points(xy[ok, ], pch = 21,
+         bg = ifelse(is_bad[ok], "red", "white"),
+         col = "grey15", cex = psize[ok], lwd = 0.8)
+
+  title(main = paste0(v, " (EIL = ", eil_vals[v], " mg/kg)"), cex.main = 0.95)
+  if(v == "Cu"){
+    legend("bottomright", bg = "#ffffffdd", box.col = "white", cex = 0.68,
+           legend = c("Below EIL", "Exceeds EIL", "Larger = higher"),
+           pch = c(21, 21, 21), pt.bg = c("white", "red", "white"),
+           col = "grey15", pt.cex = c(1.0, 1.0, 1.7), lwd = 0.8)
+  }
+  box()
+}
+
+# 4. Render 2x2 multi-panel map
+par(mfrow = c(2, 2), mar = c(0.6, 0.6, 1.5, 0.4), oma = c(0, 0, 0, 0))
+for(v in metals) plot_metal_map(v)
+par(mfrow = c(1, 1))
+```
+
+
