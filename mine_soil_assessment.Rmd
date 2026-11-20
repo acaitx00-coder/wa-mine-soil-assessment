@@ -204,4 +204,7 @@ for(v in metals) plot_metal_map(v)
 par(mfrow = c(1, 1))
 ```
 
+## 4. Conclusion & Data Limitations
+
+This report serves primarily as a reproducible R coding and spatial data-processing exercise practising WGS84-to-UTM coordinate projection, non-parametric hypothesis testing and multi-panel satellite mapping—rather than a formal environmental risk assessment.
 
