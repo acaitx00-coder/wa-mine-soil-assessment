@@ -146,7 +146,7 @@ format_ft(zone_tab, "Table 2. Spatial comparison between Mineralised Core and Pe
 
 ## 3. Spatial Distribution of Soil Metals
 
-To visualise spatial dispersion and localised hotspots, we overlay concentration-scaled sample bubbles onto high-resolution satellite imagery (`Esri.WorldImagery`, UTM Zone 50S). Samples exceeding site-specific EILs are highlighted with red outer rings.
+To visualise spatial dispersion and localised hotspots, we overlay concentration-scaled sample bubbles onto high-resolution satellite imagery (`Esri.WorldImagery`, UTM Zone 50S). Samples exceeding site-specific EILs are highlighted with solid red circles.
 
 ```{r spatial-maps, fig.width=6.5, fig.height=7.2}
 # 1. Define UTM Zone 50S map extent and fetch satellite basemap
